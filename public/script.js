@@ -8,6 +8,83 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 const BACKEND_URL = 'https://hydroponic-ibf4.onrender.com';
 const socketServer = BACKEND_URL;
+// ==================== SOCKET.IO CONNECTION ====================
+const socket = io(socketServer, {
+  transports: ['websocket'] // use WebSocket only, avoid long-polling fallback
+});
+
+// Connection opened
+socket.on('connect', () => {
+  console.log('Socket connected');
+  if (connectionStatus) {
+    connectionStatus.textContent = 'Connected';
+    connectionStatus.className = 'status connected';
+  }
+  // Hide any warning banner if present
+  if (typeof warningBanner !== 'undefined' && warningBanner) {
+    warningBanner.style.display = 'none';
+  }
+});
+
+// Connection lost
+socket.on('disconnect', () => {
+  console.log('Socket disconnected');
+  if (connectionStatus) {
+    connectionStatus.textContent = 'Disconnected';
+    connectionStatus.className = 'status disconnected';
+  }
+  if (typeof warningBanner !== 'undefined' && warningBanner) {
+    warningBanner.style.display = 'block';
+  }
+});
+
+// ==================== RECEIVE REAL-TIME SENSOR DATA ====================
+socket.on('newSensorData', (data) => {
+  console.log('Data received:', data);
+
+  // Update all sensor values (fallback to '--' if null)
+  if (temperatureValue) temperatureValue.textContent = data.airTemperature?.toFixed(1) ?? '--';
+  if (humidityValue) humidityValue.textContent = data.humidity?.toFixed(0) ?? '--';
+  if (waterTempValue) waterTempValue.textContent = data.waterTemperature?.toFixed(1) ?? '--';
+  if (phValue) phValue.textContent = data.ph?.toFixed(2) ?? '--';
+  if (tdsValue) tdsValue.textContent = data.tds != null ? Math.round(data.tds) : '--';
+  if (waterLevelValue) waterLevelValue.textContent = data.waterLevel != null ? `${data.waterLevel}%` : '--%';
+  if (sunlightValue) sunlightValue.textContent = data.sunlight != null ? `${data.sunlight}%` : '--%';
+
+  // Actuator statuses (you may have classes for badges)
+  if (pumpStatus) {
+    pumpStatus.textContent = data.pump ? 'ON' : 'OFF';
+    pumpStatus.className = data.pump ? 'badge active' : 'badge inactive';
+  }
+  if (lightStatus) {
+    lightStatus.textContent = data.light ? 'ON' : 'OFF';
+    lightStatus.className = data.light ? 'badge active' : 'badge inactive';
+  }
+  if (mistStatus) {
+    mistStatus.textContent = data.mist ? 'ON' : 'OFF';
+    mistStatus.className = data.mist ? 'badge active' : 'badge inactive';
+  }
+  if (shedStatus) {
+    shedStatus.textContent = data.shed ? 'Closed' : 'Open';
+    shedStatus.className = data.shed ? 'badge active' : 'badge';
+  }
+
+  // Update range labels (if you're using them)
+  if (temperatureRangeLabel) temperatureRangeLabel.textContent = `Optimal: 18-30°C`;
+  if (humidityRangeLabel) humidityRangeLabel.textContent = `Optimal: 50-70%`;
+
+  // Update timestamp
+  if (lastUpdate) {
+    const time = data.timestamp ? new Date(data.timestamp).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'}) : '--';
+    lastUpdate.textContent = time;
+  }
+
+  // Overview state (if you have these elements)
+  if (overviewConnection) overviewConnection.textContent = 'Live';
+  if (overviewHealth) overviewHealth.textContent = 'Optimal';
+});
+
+// Optional: if you need to request last data on page load (already sent by server on connect)
 const connectionStatus = document.getElementById('connectionStatus');
 const warningBanner = document.getElementById('warningBanner');
 const overviewConnection = document.getElementById('overviewConnection');
