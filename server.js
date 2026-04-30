@@ -11,6 +11,7 @@ const PORT = process.env.PORT || 3000;
 const ALLOW_ALL_CORS = true;
 
 app.use(express.json());
+app.use(express.static('public'));
 
 if (ALLOW_ALL_CORS) {
   app.use(cors());
