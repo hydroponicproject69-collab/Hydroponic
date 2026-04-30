@@ -6,8 +6,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }, 2000); // Wait for the loading animation to complete
   }
 });
-
-const socketServer = window.location.origin;
+const BACKEND_URL = 'https://hydroponic-ibf4.onrender.com';
+const socketServer = BACKEND_URL;
 const connectionStatus = document.getElementById('connectionStatus');
 const warningBanner = document.getElementById('warningBanner');
 const overviewConnection = document.getElementById('overviewConnection');
