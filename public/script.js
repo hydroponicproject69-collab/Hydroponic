@@ -6,85 +6,12 @@ document.addEventListener('DOMContentLoaded', () => {
     }, 2000); // Wait for the loading animation to complete
   }
 });
+
+// ==================== BACKEND CONFIG ====================
 const BACKEND_URL = 'https://hydroponic-ibf4.onrender.com';
 const socketServer = BACKEND_URL;
-// ==================== SOCKET.IO CONNECTION ====================
-const socket = io(socketServer, {
-  transports: ['websocket'] // use WebSocket only, avoid long-polling fallback
-});
 
-// Connection opened
-socket.on('connect', () => {
-  console.log('Socket connected');
-  if (connectionStatus) {
-    connectionStatus.textContent = 'Connected';
-    connectionStatus.className = 'status connected';
-  }
-  // Hide any warning banner if present
-  if (typeof warningBanner !== 'undefined' && warningBanner) {
-    warningBanner.style.display = 'none';
-  }
-});
-
-// Connection lost
-socket.on('disconnect', () => {
-  console.log('Socket disconnected');
-  if (connectionStatus) {
-    connectionStatus.textContent = 'Disconnected';
-    connectionStatus.className = 'status disconnected';
-  }
-  if (typeof warningBanner !== 'undefined' && warningBanner) {
-    warningBanner.style.display = 'block';
-  }
-});
-
-// ==================== RECEIVE REAL-TIME SENSOR DATA ====================
-socket.on('newSensorData', (data) => {
-  console.log('Data received:', data);
-
-  // Update all sensor values (fallback to '--' if null)
-  if (temperatureValue) temperatureValue.textContent = data.airTemperature?.toFixed(1) ?? '--';
-  if (humidityValue) humidityValue.textContent = data.humidity?.toFixed(0) ?? '--';
-  if (waterTempValue) waterTempValue.textContent = data.waterTemperature?.toFixed(1) ?? '--';
-  if (phValue) phValue.textContent = data.ph?.toFixed(2) ?? '--';
-  if (tdsValue) tdsValue.textContent = data.tds != null ? Math.round(data.tds) : '--';
-  if (waterLevelValue) waterLevelValue.textContent = data.waterLevel != null ? `${data.waterLevel}%` : '--%';
-  if (sunlightValue) sunlightValue.textContent = data.sunlight != null ? `${data.sunlight}%` : '--%';
-
-  // Actuator statuses (you may have classes for badges)
-  if (pumpStatus) {
-    pumpStatus.textContent = data.pump ? 'ON' : 'OFF';
-    pumpStatus.className = data.pump ? 'badge active' : 'badge inactive';
-  }
-  if (lightStatus) {
-    lightStatus.textContent = data.light ? 'ON' : 'OFF';
-    lightStatus.className = data.light ? 'badge active' : 'badge inactive';
-  }
-  if (mistStatus) {
-    mistStatus.textContent = data.mist ? 'ON' : 'OFF';
-    mistStatus.className = data.mist ? 'badge active' : 'badge inactive';
-  }
-  if (shedStatus) {
-    shedStatus.textContent = data.shed ? 'Closed' : 'Open';
-    shedStatus.className = data.shed ? 'badge active' : 'badge';
-  }
-
-  // Update range labels (if you're using them)
-  if (temperatureRangeLabel) temperatureRangeLabel.textContent = `Optimal: 18-30°C`;
-  if (humidityRangeLabel) humidityRangeLabel.textContent = `Optimal: 50-70%`;
-
-  // Update timestamp
-  if (lastUpdate) {
-    const time = data.timestamp ? new Date(data.timestamp).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'}) : '--';
-    lastUpdate.textContent = time;
-  }
-
-  // Overview state (if you have these elements)
-  if (overviewConnection) overviewConnection.textContent = 'Live';
-  if (overviewHealth) overviewHealth.textContent = 'Optimal';
-});
-
-// Optional: if you need to request last data on page load (already sent by server on connect)
+// ==================== GLOBAL DOM ELEMENTS ====================
 const connectionStatus = document.getElementById('connectionStatus');
 const warningBanner = document.getElementById('warningBanner');
 const overviewConnection = document.getElementById('overviewConnection');
@@ -117,6 +44,7 @@ const tempUnitControl = document.getElementById('tempUnitControl');
 const refreshIntervalControl = document.getElementById('refreshIntervalControl');
 const glowToggle = document.getElementById('glowToggle');
 const navItems = Array.from(document.querySelectorAll('.nav-item'));
+
 const thresholdFields = {
   thresholdTempMin: 18,
   thresholdTempMax: 30,
@@ -133,19 +61,68 @@ const currentDisplaySettings = {
   refreshInterval: parseInt(localStorage.getItem('refreshInterval')) || 2,
   glowEnabled: localStorage.getItem('glowEnabled') !== 'false',
 };
-let lastTelemetryTime = 0;
 
+let lastTelemetryTime = 0;
 const telemetryHistory = {
   labels: [],
   temperature: [],
   waterLevel: [],
 };
 
+// ==================== SOCKET CONNECTION (SINGLE) ====================
+let socket = null;
+
+function connectSocket() {
+  if (typeof io !== 'function') {
+    overviewConnection.textContent = 'No Socket.IO';
+    warningBanner.classList.remove('hidden');
+    return;
+  }
+
+  // Create ONE connection
+  socket = io(socketServer, {
+    transports: ['websocket'],
+    reconnectionAttempts: 5,
+  });
+
+  socket.on('connect', () => setConnection(true));
+  socket.on('disconnect', () => setConnection(false));
+  socket.on('connect_error', () => setConnection(false));
+
+  // The server emits 'newSensorData' with the exact payload we need
+  socket.on('newSensorData', (data) => {
+    if (!data) return;
+    setConnection(true);
+
+    // Map server keys to the format updateTelemetry() expects
+    const mappedData = {
+      temperature: Number(data.airTemperature),
+      humidity: Number(data.humidity),
+      waterTemperature: Number(data.waterTemperature),
+      ph: Number(data.ph),
+      tds: Number(data.tds),
+      waterLevel: Number(data.waterLevel),
+      sunlight: Number(data.sunlight),
+      pumpRelay: Boolean(data.pump),
+      lightRelay: Boolean(data.light),
+      mistRelay: Boolean(data.mist),
+      shedRelay: Boolean(data.shed),
+      timestamp: data.timestamp || new Date().toISOString(),
+    };
+
+    updateTelemetry(mappedData);
+  });
+}
+
+// ==================== UI HELPERS ====================
 function setConnection(connected) {
-  connectionStatus.classList.toggle('connected', connected);
-  connectionStatus.querySelector('.status-text').textContent = connected ? 'Connected' : 'Disconnected';
-  warningBanner.classList.toggle('hidden', connected);
-  overviewConnection.textContent = connected ? 'Online' : 'Offline';
+  if (connectionStatus) {
+    connectionStatus.classList.toggle('connected', connected);
+    const statusText = connectionStatus.querySelector('.status-text');
+    if (statusText) statusText.textContent = connected ? 'Connected' : 'Disconnected';
+  }
+  if (warningBanner) warningBanner.classList.toggle('hidden', connected);
+  if (overviewConnection) overviewConnection.textContent = connected ? 'Online' : 'Offline';
 }
 
 function formatTimestamp(timestamp) {
@@ -160,7 +137,7 @@ function formatTimestamp(timestamp) {
       month: 'short',
       day: 'numeric',
     });
-  } catch (error) {
+  } catch {
     return 'Unknown';
   }
 }
@@ -170,27 +147,36 @@ function clampHistory(array, length = 24) {
 }
 
 function updateRangeLabels() {
-  temperatureRangeLabel.textContent = 'Stable environment';
-  humidityRangeLabel.textContent = 'Target: 45–75%';
-  waterTempLabel.textContent = 'Optimal 18–24°C';
-  phLabel.textContent = 'Target 5.8–6.5';
-  tdsLabel.textContent = 'Target 600–1200 ppm';
-  waterLevelLabel.textContent = 'Tank capacity';
-  sunlightLabel.textContent = 'Ambient light';
+  if (temperatureRangeLabel) temperatureRangeLabel.textContent = 'Stable environment';
+  if (humidityRangeLabel) humidityRangeLabel.textContent = 'Target: 45–75%';
+  if (waterTempLabel) waterTempLabel.textContent = 'Optimal 18–24°C';
+  if (phLabel) phLabel.textContent = 'Target 5.8–6.5';
+  if (tdsLabel) tdsLabel.textContent = 'Target 600–1200 ppm';
+  if (waterLevelLabel) waterLevelLabel.textContent = 'Tank capacity';
+  if (sunlightLabel) sunlightLabel.textContent = 'Ambient light';
 }
 
 function updateRobotHealth(telemetry) {
-  const values = [telemetry.temperature, telemetry.humidity, telemetry.waterTemperature, telemetry.ph, telemetry.tds, telemetry.waterLevel, telemetry.sunlight];
-  const valid = values.filter((value) => typeof value === 'number' && !Number.isNaN(value));
+  const values = [
+    telemetry.temperature,
+    telemetry.humidity,
+    telemetry.waterTemperature,
+    telemetry.ph,
+    telemetry.tds,
+    telemetry.waterLevel,
+    telemetry.sunlight,
+  ];
+  const valid = values.filter(v => typeof v === 'number' && !isNaN(v));
   const score = valid.length ? Math.round((valid.length / values.length) * 100) : 0;
-  overviewHealth.textContent = `${score}%`;
+  if (overviewHealth) overviewHealth.textContent = `${score}%`;
 }
 
 function updateControlState(element, value) {
+  if (!element) return;
   const state = value ? 'ON' : 'OFF';
   element.textContent = state;
   element.classList.toggle('off', !value);
-  
+
   const card = element.closest('.control-card');
   if (card) {
     card.classList.toggle('device-on', value);
@@ -201,50 +187,35 @@ function updateControlState(element, value) {
   }
 }
 
-function updateTelemetry(data) {
+function updateTelemetry(telemetry) {
   const now = Date.now();
   if (now - lastTelemetryTime < currentDisplaySettings.refreshInterval * 1000) {
     return;
   }
   lastTelemetryTime = now;
 
-  const telemetry = {
-    temperature: Number(data.temperature),
-    humidity: Number(data.humidity),
-    waterTemperature: Number(data.waterTemperature),
-    ph: Number(data.ph),
-    tds: Number(data.tds),
-    waterLevel: Number(data.waterLevel),
-    sunlight: Number(data.sunlight),
-    pumpRelay: Boolean(Number(data.pumpRelay)),
-    lightRelay: Boolean(Number(data.lightRelay)),
-    mistRelay: Boolean(Number(data.mistRelay)),
-    shedRelay: Boolean(Number(data.shedRelay)),
-    timestamp: data.timestamp || Date.now(),
-  };
-
   let displayAirTemp = telemetry.temperature;
   let displayWaterTemp = telemetry.waterTemperature;
 
   if (currentDisplaySettings.tempUnit === 'F') {
-    displayAirTemp = (displayAirTemp * 9 / 5) + 32;
-    displayWaterTemp = (displayWaterTemp * 9 / 5) + 32;
+    displayAirTemp = (displayAirTemp * 9) / 5 + 32;
+    displayWaterTemp = (displayWaterTemp * 9) / 5 + 32;
   }
 
-  temperatureValue.textContent = Number.isNaN(displayAirTemp) ? '--' : displayAirTemp.toFixed(1);
-  humidityValue.textContent = Number.isNaN(telemetry.humidity) ? '--' : telemetry.humidity.toFixed(1);
-  waterTempValue.textContent = Number.isNaN(displayWaterTemp) ? '--' : displayWaterTemp.toFixed(1);
-  phValue.textContent = Number.isNaN(telemetry.ph) ? '--' : telemetry.ph.toFixed(2);
-  tdsValue.textContent = Number.isNaN(telemetry.tds) ? '--' : String(Math.round(telemetry.tds));
-  waterLevelValue.textContent = Number.isNaN(telemetry.waterLevel) ? '--' : String(Math.round(telemetry.waterLevel));
-  sunlightValue.textContent = Number.isNaN(telemetry.sunlight) ? '--' : String(Math.round(telemetry.sunlight));
+  if (temperatureValue) temperatureValue.textContent = isNaN(displayAirTemp) ? '--' : displayAirTemp.toFixed(1);
+  if (humidityValue) humidityValue.textContent = isNaN(telemetry.humidity) ? '--' : telemetry.humidity.toFixed(1);
+  if (waterTempValue) waterTempValue.textContent = isNaN(displayWaterTemp) ? '--' : displayWaterTemp.toFixed(1);
+  if (phValue) phValue.textContent = isNaN(telemetry.ph) ? '--' : telemetry.ph.toFixed(2);
+  if (tdsValue) tdsValue.textContent = isNaN(telemetry.tds) ? '--' : String(Math.round(telemetry.tds));
+  if (waterLevelValue) waterLevelValue.textContent = isNaN(telemetry.waterLevel) ? '--' : String(Math.round(telemetry.waterLevel));
+  if (sunlightValue) sunlightValue.textContent = isNaN(telemetry.sunlight) ? '--' : String(Math.round(telemetry.sunlight));
 
   updateControlState(pumpStatus, telemetry.pumpRelay);
   updateControlState(lightStatus, telemetry.lightRelay);
   updateControlState(mistStatus, telemetry.mistRelay);
   updateControlState(shedStatus, telemetry.shedRelay);
 
-  lastUpdate.textContent = formatTimestamp(telemetry.timestamp);
+  if (lastUpdate) lastUpdate.textContent = formatTimestamp(telemetry.timestamp);
   updateRobotHealth(telemetry);
   updateRangeLabels();
   pushTelemetryHistory(telemetry);
@@ -253,41 +224,37 @@ function updateTelemetry(data) {
 function pushTelemetryHistory({ timestamp, temperature, waterLevel }) {
   const label = formatTimestamp(timestamp);
   telemetryHistory.labels.push(label);
-  telemetryHistory.temperature.push(Number.isNaN(temperature) ? 0 : temperature);
-  telemetryHistory.waterLevel.push(Number.isNaN(waterLevel) ? 0 : waterLevel);
+  telemetryHistory.temperature.push(isNaN(temperature) ? 0 : temperature);
+  telemetryHistory.waterLevel.push(isNaN(waterLevel) ? 0 : waterLevel);
   telemetryHistory.labels = clampHistory(telemetryHistory.labels);
   telemetryHistory.temperature = clampHistory(telemetryHistory.temperature);
   telemetryHistory.waterLevel = clampHistory(telemetryHistory.waterLevel);
   refreshCharts();
 }
 
+// ==================== CHARTS ====================
 function buildChart(context, label, color, unit) {
   return new Chart(context, {
     type: 'line',
     data: {
       labels: telemetryHistory.labels,
-      datasets: [{
-        label,
-        data: label === 'Air Temperature' ? telemetryHistory.temperature : telemetryHistory.waterLevel,
-        borderColor: color,
-        backgroundColor: color.replace('1)', '0.14)'),
-        tension: 0.35,
-        pointRadius: 2,
-        borderWidth: 2,
-        fill: true,
-      }],
+      datasets: [
+        {
+          label,
+          data: label === 'Air Temperature' ? telemetryHistory.temperature : telemetryHistory.waterLevel,
+          borderColor: color,
+          backgroundColor: color.replace('1)', '0.14)'),
+          tension: 0.35,
+          pointRadius: 2,
+          borderWidth: 2,
+          fill: true,
+        },
+      ],
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          callbacks: {
-            label: (context) => `${context.dataset.label}: ${context.formattedValue} ${unit}`,
-          },
-        },
-      },
+      plugins: { legend: { display: false } },
       scales: {
         x: { grid: { display: false }, ticks: { maxTicksLimit: 6, color: '#9bacd9' } },
         y: { ticks: { color: '#9bacd9' }, grid: { color: 'rgba(255,255,255,0.08)' } },
@@ -296,25 +263,34 @@ function buildChart(context, label, color, unit) {
   });
 }
 
-const temperatureChart = buildChart(document.getElementById('temperatureChart'), 'Air Temperature', 'rgba(77, 139, 255, 1)', '°C');
-const waterLevelChart = buildChart(document.getElementById('waterLevelChart'), 'Water Level', 'rgba(71, 217, 187, 1)', '%');
+const temperatureChartCtx = document.getElementById('temperatureChart');
+const waterLevelChartCtx = document.getElementById('waterLevelChart');
+let temperatureChart, waterLevelChart;
 
-function refreshCharts() {
-  temperatureChart.data.labels = telemetryHistory.labels;
-  temperatureChart.data.datasets[0].data = telemetryHistory.temperature;
-  waterLevelChart.data.labels = telemetryHistory.labels;
-  waterLevelChart.data.datasets[0].data = telemetryHistory.waterLevel;
-  temperatureChart.update();
-  waterLevelChart.update();
+if (temperatureChartCtx && waterLevelChartCtx) {
+  temperatureChart = buildChart(temperatureChartCtx, 'Air Temperature', 'rgba(77, 139, 255, 1)', '°C');
+  waterLevelChart = buildChart(waterLevelChartCtx, 'Water Level', 'rgba(71, 217, 187, 1)', '%');
 }
 
+function refreshCharts() {
+  if (temperatureChart) {
+    temperatureChart.data.labels = telemetryHistory.labels;
+    temperatureChart.data.datasets[0].data = telemetryHistory.temperature;
+    temperatureChart.update();
+  }
+  if (waterLevelChart) {
+    waterLevelChart.data.labels = telemetryHistory.labels;
+    waterLevelChart.data.datasets[0].data = telemetryHistory.waterLevel;
+    waterLevelChart.update();
+  }
+}
+
+// ==================== THRESHOLDS ====================
 function loadThresholds() {
   Object.keys(thresholdFields).forEach((key) => {
     const value = localStorage.getItem(key);
     const input = document.getElementById(key);
-    if (input) {
-      input.value = value !== null ? value : thresholdFields[key];
-    }
+    if (input) input.value = value !== null ? value : thresholdFields[key];
   });
 }
 
@@ -324,19 +300,20 @@ function saveThresholds() {
     if (!input) return;
     localStorage.setItem(key, input.value || thresholdFields[key]);
   });
-  settingsMessage.classList.remove('hidden');
-  setTimeout(() => settingsMessage.classList.add('hidden'), 2600);
+  if (settingsMessage) {
+    settingsMessage.classList.remove('hidden');
+    setTimeout(() => settingsMessage.classList.add('hidden'), 2600);
+  }
 }
 
+// ==================== CONTROL BUTTONS ====================
 function handleControlButtons() {
-  const buttons = document.querySelectorAll('.control-buttons .btn');
-  buttons.forEach((button) => {
+  document.querySelectorAll('.control-buttons .btn').forEach((button) => {
     button.addEventListener('click', async (event) => {
       event.preventDefault();
       const device = button.getAttribute('data-device');
       const state = parseInt(button.getAttribute('data-state'), 10);
-      
-      // Optimistic UI update
+
       const card = button.closest('.control-card');
       if (card) {
         card.querySelectorAll('.btn').forEach(b => b.classList.remove('active'));
@@ -350,52 +327,42 @@ function handleControlButtons() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ device, state }),
         });
-        
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const result = await response.json();
-        console.log(`${device} ${state ? 'ON' : 'OFF'}:`, result);
       } catch (error) {
-        console.error(`Failed to control ${device}:`, error);
-        alert(`Failed to control ${device}. Check console for details.`);
+        console.error(`Control failed:`, error);
+        alert(`Failed to control ${device}. Check console.`);
       }
     });
   });
 }
 
+// ==================== NAVIGATION ====================
 function handleNavigation() {
   navItems.forEach((item) => {
     item.addEventListener('click', (event) => {
       event.preventDefault();
       const targetId = item.getAttribute('href').substring(1);
       const targetSection = document.getElementById(targetId);
-      
       if (!targetSection) return;
-      
-      // Update nav active state
-      navItems.forEach((nav) => nav.classList.remove('active'));
+
+      navItems.forEach(n => n.classList.remove('active'));
       item.classList.add('active');
-      
-      // Hide all sections and show the target
-      document.querySelectorAll('.page-section').forEach((section) => {
-        section.classList.remove('active');
-      });
+      document.querySelectorAll('.page-section').forEach(s => s.classList.remove('active'));
       targetSection.classList.add('active');
     });
   });
 }
 
+// ==================== SETTINGS TABS ====================
 function handleSettingsTabs() {
   const tabBtns = document.querySelectorAll('.settings-tabs .tab-btn');
   const tabPanes = document.querySelectorAll('.settings-tab-pane');
-
-  tabBtns.forEach((btn) => {
+  tabBtns.forEach(btn => {
     btn.addEventListener('click', (event) => {
       event.preventDefault();
       const targetId = btn.getAttribute('data-target');
-      
-      tabBtns.forEach((b) => b.classList.remove('active'));
-      tabPanes.forEach((p) => p.classList.add('hidden'));
-      
+      tabBtns.forEach(b => b.classList.remove('active'));
+      tabPanes.forEach(p => p.classList.add('hidden'));
       btn.classList.add('active');
       const targetPane = document.getElementById(targetId);
       if (targetPane) targetPane.classList.remove('hidden');
@@ -403,36 +370,25 @@ function handleSettingsTabs() {
   });
 }
 
+// ==================== DATA MANAGEMENT ====================
 function handleDataManagement() {
   if (exportCsvBtn) {
     exportCsvBtn.addEventListener('click', () => {
-      if (telemetryHistory.labels.length === 0) {
-        alert('No data to export yet.');
-        return;
-      }
-      let csvContent = "data:text/csv;charset=utf-8,";
-      csvContent += "Timestamp,Air Temperature (°C),Water Level (%)\n";
-      
+      if (!telemetryHistory.labels.length) { alert('No data to export.'); return; }
+      let csv = "data:text/csv;charset=utf-8,Timestamp,Air Temperature (°C),Water Level (%)\n";
       for (let i = 0; i < telemetryHistory.labels.length; i++) {
-        const time = telemetryHistory.labels[i];
-        const temp = telemetryHistory.temperature[i];
-        const wl = telemetryHistory.waterLevel[i];
-        csvContent += `"${time}",${temp},${wl}\n`;
+        csv += `"${telemetryHistory.labels[i]}",${telemetryHistory.temperature[i]},${telemetryHistory.waterLevel[i]}\n`;
       }
-      
-      const encodedUri = encodeURI(csvContent);
-      const link = document.createElement("a");
-      link.setAttribute("href", encodedUri);
-      link.setAttribute("download", `sensor_log_${new Date().toISOString().slice(0, 10)}.csv`);
-      document.body.appendChild(link);
+      const link = document.createElement('a');
+      link.href = encodeURI(csv);
+      link.download = `sensor_log_${new Date().toISOString().slice(0,10)}.csv`;
       link.click();
-      document.body.removeChild(link);
     });
   }
 
   if (clearHistoryBtn) {
     clearHistoryBtn.addEventListener('click', () => {
-      if (confirm('Are you sure you want to clear the chart history for this session?')) {
+      if (confirm('Clear chart history?')) {
         telemetryHistory.labels = [];
         telemetryHistory.temperature = [];
         telemetryHistory.waterLevel = [];
@@ -443,7 +399,7 @@ function handleDataManagement() {
 
   if (wipeProtocolBtn) {
     wipeProtocolBtn.addEventListener('click', () => {
-      if (confirm('WARNING: This will reset all threshold settings and clear local session data. Continue?')) {
+      if (confirm('Wipe all settings and data?')) {
         localStorage.clear();
         telemetryHistory.labels = [];
         telemetryHistory.temperature = [];
@@ -451,12 +407,13 @@ function handleDataManagement() {
         refreshCharts();
         loadThresholds();
         saveThresholds();
-        alert('Wipe protocol completed. System reset to defaults.');
+        alert('System reset.');
       }
     });
   }
 }
 
+// ==================== DISPLAY SETTINGS ====================
 function handleDisplaySettings() {
   if (tempUnitControl) {
     const btns = tempUnitControl.querySelectorAll('.segment-btn');
@@ -497,144 +454,84 @@ function handleDisplaySettings() {
   }
 }
 
-function connectSocket() {
-  if (typeof io !== 'function') {
-    overviewConnection.textContent = 'No Socket.IO';
-    warningBanner.classList.remove('hidden');
-    return;
-  }
-
-  const socket = io(socketServer, {
-    transports: ['websocket'],
-    reconnectionAttempts: 5,
-  });
-
-  socket.on('connect', () => setConnection(true));
-  socket.on('disconnect', () => setConnection(false));
-  socket.on('connect_error', () => setConnection(false));
-  socket.on('telemetry', (payload) => {
-    if (!payload) return;
-    setConnection(true);
-    updateTelemetry(payload);
-  });
-  socket.on('message', (message) => {
-    try {
-      const payload = typeof message === 'string' ? JSON.parse(message) : message;
-      updateTelemetry(payload);
-    } catch (error) {
-      console.debug('Ignored invalid telemetry payload', error);
-    }
-  });
-}
-
+// ==================== CAMERA STREAM ====================
 function handleCameraStream() {
   const connectCamBtn = document.getElementById('connectCamBtn');
   const screenshotBtn = document.getElementById('screenshotBtn');
   const esp32CamStream = document.getElementById('esp32CamStream');
   const camStatusBadge = document.getElementById('camStatusBadge');
-
   if (!connectCamBtn) return;
 
   let isStreamActive = false;
-  
   connectCamBtn.addEventListener('click', () => {
     if (!isStreamActive) {
       isStreamActive = true;
       connectCamBtn.textContent = 'Stop Camera';
-      connectCamBtn.style.backgroundColor = '#ff4848'; // Red color for stop
-      camStatusBadge.className = 'status-badge warning';
-      camStatusBadge.innerHTML = 'Connecting... <span class="dot warning"></span>';
-      
-      // Attempt to load stream from the backend server
-      esp32CamStream.crossOrigin = "anonymous";
+      connectCamBtn.style.backgroundColor = '#ff4848';
+      if (camStatusBadge) camStatusBadge.innerHTML = 'Connecting... <span class="dot warning"></span>';
       esp32CamStream.src = `${socketServer}/api/camera-stream`;
       esp32CamStream.style.display = 'block';
     } else {
       isStreamActive = false;
       connectCamBtn.textContent = 'Initialize Camera';
-      connectCamBtn.style.backgroundColor = ''; // Revert to default
+      connectCamBtn.style.backgroundColor = '';
       esp32CamStream.src = '';
-      camStatusBadge.className = 'status-badge danger';
-      camStatusBadge.innerHTML = 'Disconnected <span class="dot danger"></span>';
+      if (camStatusBadge) camStatusBadge.innerHTML = 'Disconnected <span class="dot danger"></span>';
     }
   });
 
   esp32CamStream.onerror = () => {
-    if (isStreamActive) {
-      camStatusBadge.className = 'status-badge danger';
-      camStatusBadge.innerHTML = 'Signal Lost <span class="dot danger"></span>';
-    }
+    if (isStreamActive && camStatusBadge) camStatusBadge.innerHTML = 'Signal Lost <span class="dot danger"></span>';
   };
-  
   esp32CamStream.onload = () => {
-    if (isStreamActive) {
-      camStatusBadge.className = 'status-badge success';
-      camStatusBadge.innerHTML = 'Live Feed <span class="dot success"></span>';
-    }
+    if (isStreamActive && camStatusBadge) camStatusBadge.innerHTML = 'Live Feed <span class="dot success"></span>';
   };
 
   if (screenshotBtn) {
     screenshotBtn.addEventListener('click', () => {
-      if (!isStreamActive || !esp32CamStream.src) {
-        alert('Please initialize the camera stream first.');
-        return;
-      }
-      
+      if (!isStreamActive || !esp32CamStream.src) { alert('Start the camera first.'); return; }
       try {
         const canvas = document.createElement('canvas');
         canvas.width = esp32CamStream.naturalWidth || 640;
         canvas.height = esp32CamStream.naturalHeight || 480;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(esp32CamStream, 0, 0, canvas.width, canvas.height);
-        
-        const dataUrl = canvas.toDataURL('image/jpeg');
+        canvas.getContext('2d').drawImage(esp32CamStream, 0, 0);
         const a = document.createElement('a');
-        a.href = dataUrl;
-        a.download = `hydroponic-vision-${new Date().getTime()}.jpg`;
-        document.body.appendChild(a);
+        a.href = canvas.toDataURL('image/jpeg');
+        a.download = `hydroponic-vision-${Date.now()}.jpg`;
         a.click();
-        document.body.removeChild(a);
       } catch (e) {
-        console.error('Screenshot failed:', e);
-        alert('Failed to capture screenshot. The stream might be cross-origin protected or currently unavailable.');
+        alert('Screenshot failed.');
       }
     });
   }
 }
 
+// ==================== LIVE CLOCK & UPTIME ====================
 function initTimers() {
   const clockDate = document.getElementById('liveClockDate');
   const clockTime = document.getElementById('liveClockTime');
   const sessionUptime = document.getElementById('sessionUptime');
-  
   const startTime = Date.now();
 
   function update() {
     const now = new Date();
-    if (clockDate && clockTime) {
-      clockDate.textContent = now.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
-      clockTime.textContent = now.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    }
-    
+    if (clockDate) clockDate.textContent = now.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+    if (clockTime) clockTime.textContent = now.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
     if (sessionUptime) {
       const diffMs = now.getTime() - startTime;
-      const totalSeconds = Math.floor(diffMs / 1000);
-      const h = Math.floor(totalSeconds / 3600);
-      const m = Math.floor((totalSeconds % 3600) / 60);
-      const s = totalSeconds % 60;
-      
-      let uptimeStr = '';
-      if (h > 0) uptimeStr += `${h}h `;
-      uptimeStr += `${m}m ${s.toString().padStart(2, '0')}s`;
-      sessionUptime.textContent = uptimeStr;
+      const h = Math.floor(diffMs / 3600000);
+      const m = Math.floor((diffMs % 3600000) / 60000);
+      const s = Math.floor((diffMs % 60000) / 1000);
+      sessionUptime.textContent = `${h ? h + 'h ' : ''}${m}m ${s.toString().padStart(2, '0')}s`;
     }
   }
-
   update();
   setInterval(update, 1000);
 }
 
-saveSettingsButton.addEventListener('click', saveThresholds);
+// ==================== INITIALIZATION ====================
+// DOM-free initializations
 loadThresholds();
 handleNavigation();
 handleSettingsTabs();
@@ -643,4 +540,9 @@ handleDataManagement();
 handleControlButtons();
 handleCameraStream();
 initTimers();
-connectSocket();
+connectSocket();   // Single socket connection – no duplicates
+
+// Attach save button
+if (saveSettingsButton) {
+  saveSettingsButton.addEventListener('click', saveThresholds);
+}
