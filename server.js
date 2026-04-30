@@ -39,6 +39,13 @@ app.post('/data', (req, res) => {
   res.status(200).json({ success: true, receivedAt: lastUpdateTimestamp });
 });
 
+app.get('/data', (req, res) => {
+  if (!latestSensorData) {
+    return res.status(404).json({ success: false, error: 'No data received yet' });
+  }
+  res.status(200).json({ success: true, data: latestSensorData });
+});
+
 app.post('/api/control', (req, res) => {
   const { device, state } = req.body;
   
